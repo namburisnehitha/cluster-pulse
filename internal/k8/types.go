@@ -20,6 +20,8 @@ type Pod struct {
 	LastRestartTime time.Time
 	NodeName        string
 	WatchReceivedAt time.Time
+	Events          []Event
+	Deployments     []Deployment
 }
 
 const (
