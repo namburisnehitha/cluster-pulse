@@ -22,6 +22,12 @@ type Pod struct {
 	WatchReceivedAt time.Time
 }
 
+const (
+	EventAdded    = "ADDED"
+	EventModified = "MODIFIED"
+	EventDeleted  = "DELETED"
+)
+
 type Event struct {
 	Reason   string
 	Message  string
@@ -36,4 +42,9 @@ type Deployment struct {
 	LastUpdated       time.Time
 	DesiredReplicas   int
 	AvailableReplicas int
+}
+
+type PodResult struct {
+	Pod Pod
+	Err error
 }
