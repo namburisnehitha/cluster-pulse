@@ -1,0 +1,1 @@
+DROP PROCEDURE IF EXISTS prune_old_data;

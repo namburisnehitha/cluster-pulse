@@ -1,0 +1,1 @@
+DROP EVENT IF EXISTS prune_old_data_event;
