@@ -1,6 +1,8 @@
 package ai
 
-import "time"
+import (
+	"time"
+)
 
 type Analysis struct {
 	PodName              string
@@ -15,7 +17,7 @@ type Analysis struct {
 	SuggestedMemoryLimit string
 	SuggestedCPULimit    string
 	ExitCodeExplanation  string
-	RelevantLogLines     string
+	RelevantLogLines     []string
 	RelatedPods          []string
 	TriggeringDeployment string
 	HistorySummary       string
