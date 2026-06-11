@@ -11,9 +11,9 @@ type Producer struct {
 	writer *kafka.Writer
 }
 
-func NewProducer(brokerAddr, topic string) *Producer {
+func NewProducer(brokers []string, topic string) *Producer {
 	writer := &kafka.Writer{
-		Addr:  kafka.TCP(brokerAddr),
+		Addr:  kafka.TCP(brokers...),
 		Topic: topic,
 	}
 	return &Producer{writer: writer}
