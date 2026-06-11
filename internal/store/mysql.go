@@ -66,10 +66,16 @@ func (m *MySQL) SaveAnalysis(ctx context.Context, a ai.Analysis) error {
 		return err
 	}
 
+	var failureTime sql.NullTime
+
+	if !a.FailureTime.IsZero() {
+		failureTime = sql.NullTime{Time: a.FailureTime, Valid: true}
+	}
+
 	_, err = m.db.ExecContext(ctx, `
-		INSERT INTO analyses (pod_name, namespace, severity, confidence, is_recurring, failure_time, analyzed_at, details)
+		INSERT INTO analyses (pod_name, namespace, severity, confidence, is_recurring, failureTime, analyzed_at, details)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, a.PodName, a.Namespace, a.Severity, a.Confidence, a.IsRecurring, a.FailureTime, a.AnalyzedAt, details)
+	`, a.PodName, a.Namespace, a.Severity, a.Confidence, a.IsRecurring, failureTime, a.AnalyzedAt, details)
 
 	return err
 }
