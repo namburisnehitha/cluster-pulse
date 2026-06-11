@@ -8,4 +8,5 @@ type K8 interface {
 	GetRecentEvents(ctx context.Context, namespace, podName string) ([]Event, error)
 	GetRecentDeployments(ctx context.Context, namespace string) ([]Deployment, error)
 	ListAllPods(ctx context.Context) ([]Pod, error)
+	GetPodMetrics(ctx context.Context, namespace, podName string) (cpuUsage, memUsage string, err error)
 }

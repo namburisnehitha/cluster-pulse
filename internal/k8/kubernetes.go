@@ -10,10 +10,12 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	metricsv "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 type Client struct {
-	clientset *kubernetes.Clientset
+	clientset     *kubernetes.Clientset
+	metricsClient *metricsv.Clientset
 }
 
 func NewClient() (*Client, error) {
@@ -31,7 +33,12 @@ func NewClient() (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{clientset: clientset}, nil
+	metricsClient, err := metricsv.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Client{clientset: clientset, metricsClient: metricsClient}, nil
 }
 
 func (c *Client) WatchPods(ctx context.Context) (<-chan PodResult, error) {
@@ -310,4 +317,20 @@ func toDomainPod(pod *corev1.Pod) Pod {
 
 	return p
 
+}
+
+func (c *Client) GetPodMetrics(ctx context.Context, namespace, podName string) (cpuUsage, memUsage string, err error) {
+	metrics, err := c.metricsClient.MetricsV1beta1().PodMetricses(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return "", "", err
+	}
+
+	if len(metrics.Containers) == 0 {
+		return "", "", nil
+	}
+
+	cpu := metrics.Containers[0].Usage.Cpu()
+	mem := metrics.Containers[0].Usage.Memory()
+
+	return cpu.String(), mem.String(), nil
 }
