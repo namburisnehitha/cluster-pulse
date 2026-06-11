@@ -1,0 +1,18 @@
+# Environment variables
+.env
+
+# Local config
+config.yaml
+
+# Build artifacts
+build.log
+*.out
+*.test
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
