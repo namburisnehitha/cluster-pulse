@@ -16,19 +16,19 @@ type OpenAIAnalyzer struct {
 	model  string
 }
 
-func NewOpenAIAnalyzer(apiKey, baseURL string) *OpenAIAnalyzer {
+func NewOpenAIAnalyzer(apiKey, baseURL, model string) *OpenAIAnalyzer {
 	config := openai.DefaultConfig(apiKey)
 	config.BaseURL = baseURL
 	client := openai.NewClientWithConfig(config)
 	return &OpenAIAnalyzer{
 		client: client,
-		model:  "llama-3.1-8b-instant",
+		model:  model,
 	}
 }
 
-func (oa *OpenAIAnalyzer) Analyze(ctx context.Context, event kafka.PodEvent) (Analysis, error) {
+func (oa *OpenAIAnalyzer) Analyze(ctx context.Context, event kafka.PodEvent, trend ResourceTrend) (Analysis, error) {
 
-	prompt := buildPrompt(event)
+	prompt := buildPrompt(event, trend)
 
 	resp, err := oa.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model: oa.model,
@@ -59,7 +59,7 @@ func (oa *OpenAIAnalyzer) Analyze(ctx context.Context, event kafka.PodEvent) (An
 
 }
 
-func buildPrompt(event kafka.PodEvent) string {
+func buildPrompt(event kafka.PodEvent, trend ResourceTrend) string {
 	return fmt.Sprintf(`You are a Kubernetes SRE expert. Analyze this pod failure step by step.
 
 Pod: %s
@@ -80,6 +80,7 @@ Recent Events:
 Recent Deployments:
 %s
 
+Resource trend (last %d readings): avg memory %dMi, avg cpu %dm, direction: %s
 
 Respond ONLY in this JSON format, no other text:
 {
@@ -111,6 +112,10 @@ Respond ONLY in this JSON format, no other text:
 		event.Pod.Logs,
 		formatEvents(event.Pod.Events),
 		formatDeployments(event.Pod.Deployments),
+		trend.SampleCount,
+		trend.AvgMemoryMi,
+		trend.AvgCPUMilli,
+		trend.Direction,
 	)
 }
 

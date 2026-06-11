@@ -26,3 +26,10 @@ type Analysis struct {
 	FailureTime          time.Time
 	AnalyzedAt           time.Time
 }
+
+type ResourceTrend struct {
+	AvgMemoryMi int
+	AvgCPUMilli int
+	Direction   string
+	SampleCount int
+}

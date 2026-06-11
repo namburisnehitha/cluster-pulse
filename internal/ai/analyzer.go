@@ -7,5 +7,5 @@ import (
 )
 
 type Analyzer interface {
-	Analyze(ctx context.Context, event kafka.PodEvent) (Analysis, error)
+	Analyze(ctx context.Context, event kafka.PodEvent, trend ResourceTrend) (Analysis, error)
 }
