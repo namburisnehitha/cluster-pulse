@@ -10,17 +10,17 @@ import (
 	"github.com/namburisnehitha/cluster-pulse/internal/ai"
 )
 
-type Notifier struct {
+type SlackNotifier struct {
 	WebHookURL string
 }
 
-func NewNotifier(url string) *Notifier {
-	return &Notifier{
+func NewNotifier(url string) *SlackNotifier {
+	return &SlackNotifier{
 		WebHookURL: url,
 	}
 }
 
-func (n *Notifier) Notify(ctx context.Context, analysis ai.Analysis) error {
+func (n *SlackNotifier) Notify(ctx context.Context, analysis ai.Analysis) error {
 	text := fmt.Sprintf("*Pod Alert: %s/%s*\nSeverity: %s\nRoot cause: %s\nFix: %s\nCommand: `%s`",
 		analysis.Namespace, analysis.PodName, analysis.Severity, analysis.RootCause, analysis.Fix, analysis.KubectlCommand)
 

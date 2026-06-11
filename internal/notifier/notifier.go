@@ -6,6 +6,6 @@ import (
 	"github.com/namburisnehitha/cluster-pulse/internal/ai"
 )
 
-type notification interface {
+type Notifier interface {
 	Notify(ctx context.Context, analysis ai.Analysis) error
 }
