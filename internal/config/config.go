@@ -9,11 +9,15 @@ type Config struct {
 	SlackWebhookURL               string
 	KafkaBrokers                  []string
 	KafkaTopicName                string
-	AiAPIKey                      string
-	AiModelName                   string
-	JWTsecret                     string
+	GroqAPIKey                    string
+	OpenAIAPIKey                  string
+	GroqModel                     string
+	OpenAIModel                   string
+	JWTSecret                     string
 	WorkerConcurrencyLimit        int
 	ResourceSnapshotRetentionDays int
+	AdminUsername                 string
+	AdminPasswordHash             string
 }
 
 func Load(path string) (*Config, error) {
