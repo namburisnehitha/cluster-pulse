@@ -20,12 +20,21 @@ func ComputeTrend(snaps []ResourceSnapshot) ai.ResourceTrend {
 		cpuVals[i] = parseQuantity(s.CPUUsage, "m")
 	}
 
+	if len(snaps) == 1 {
+		return ai.ResourceTrend{
+			Direction:   "unknown",
+			AvgMemoryMi: memVals[0],
+			AvgCPUMilli: cpuVals[0],
+			SampleCount: 1,
+		}
+	}
+
 	avgMem := average(memVals)
 	avgCPU := average(cpuVals)
 
 	mid := len(memVals) / 2
-	recent := average(memVals[:mid+len(memVals)%2])
-	older := average(memVals[mid+len(memVals)%2:])
+	older := average(memVals[:mid])
+	recent := average(memVals[mid:])
 
 	direction := "stable"
 	if older > 0 {

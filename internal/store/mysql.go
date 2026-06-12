@@ -136,7 +136,7 @@ func (m *MySQL) GetPodHistory(ctx context.Context, podName, namespace string, li
 		SELECT id, pod_name, namespace, cpu_usage, memory_usage, recorded_at
 		FROM resource_snapshots
 		WHERE pod_name = ? AND namespace = ?
-		ORDER BY recorded_at DESC LIMIT ?
+		ORDER BY recorded_at ASC LIMIT ?
 	`, podName, namespace, limit)
 	if err != nil {
 		return nil, err
