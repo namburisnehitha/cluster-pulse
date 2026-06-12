@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/namburisnehitha/cluster-pulse/internal/cache"
 	"github.com/namburisnehitha/cluster-pulse/internal/k8"
 	"github.com/namburisnehitha/cluster-pulse/internal/store"
 )
@@ -38,7 +39,7 @@ func clusterUnhealthyHandler(k8sClient *k8.Client) gin.HandlerFunc {
 	}
 }
 
-func listAnalysesHandler(mysqlStore *store.MySQL) gin.HandlerFunc {
+func listAnalysesHandler(s store.Store) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		cursor := c.Query("cursor")
 		limitStr := c.DefaultQuery("limit", "20")
@@ -48,7 +49,7 @@ func listAnalysesHandler(mysqlStore *store.MySQL) gin.HandlerFunc {
 			limit = 20
 		}
 
-		analyses, nextCursor, err := mysqlStore.ListAnalyses(c.Request.Context(), cursor, limit)
+		analyses, nextCursor, err := s.ListAnalyses(c.Request.Context(), cursor, limit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -61,15 +62,18 @@ func listAnalysesHandler(mysqlStore *store.MySQL) gin.HandlerFunc {
 	}
 }
 
-func getAnalysisHandler(mysqlStore *store.MySQL) gin.HandlerFunc {
+func getAnalysisHandler(s store.Store, redisCache *cache.Redis) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		podName := c.Param("pod")
-		namespace := c.Query("namespace")
-		if namespace == "" {
-			namespace = "default"
+		namespace := c.DefaultQuery("namespace", "default")
+
+		key := "analyzed:" + namespace + "/" + podName
+		if cached, err := redisCache.Get(c.Request.Context(), key); err == nil {
+			c.Data(http.StatusOK, "application/json", []byte(cached))
+			return
 		}
 
-		analysis, err := mysqlStore.GetAnalysis(c.Request.Context(), podName, namespace)
+		analysis, err := s.GetAnalysis(c.Request.Context(), podName, namespace)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -99,5 +103,41 @@ func podMetricsHandler(k8sClient *k8.Client) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusOK, gin.H{"cpu": cpu, "memory": mem})
+	}
+}
+
+func podHistoryHandler(s store.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		podName := c.Param("pod")
+		namespace := c.DefaultQuery("namespace", "default")
+		history, err := s.GetPodHistory(c.Request.Context(), podName, namespace, 10)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, history)
+	}
+}
+
+func clusterNodesHandler(k8sClient *k8.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		nodes, err := k8sClient.ListAllNodes(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, nodes)
+	}
+}
+
+func clusterEventsHandler(k8sClient *k8.Client) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		namespace := c.DefaultQuery("namespace", "")
+		events, err := k8sClient.ListAllEvents(c.Request.Context(), namespace)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, events)
 	}
 }

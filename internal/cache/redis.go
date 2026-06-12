@@ -29,8 +29,8 @@ func NewRedis(ctx context.Context, address string, password string) (*Redis, err
 }
 
 func (r *Redis) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
-	err := r.Set(ctx, key, value, ttl)
-	return err
+	return r.rc.Set(ctx, key, value, ttl).Err()
+
 }
 
 func (r *Redis) Get(ctx context.Context, key string) (string, error) {

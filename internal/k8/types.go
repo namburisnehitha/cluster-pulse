@@ -50,3 +50,13 @@ type PodResult struct {
 	Pod Pod
 	Err error
 }
+
+type Node struct {
+	Name           string
+	Status         string
+	Roles          []string
+	Age            time.Time
+	KubeletVersion string
+	CPUCapacity    string
+	MemoryCapacity string
+}

@@ -26,9 +26,9 @@ func NewOpenAIAnalyzer(apiKey, baseURL, model string) *OpenAIAnalyzer {
 	}
 }
 
-func (oa *OpenAIAnalyzer) Analyze(ctx context.Context, event kafka.PodEvent, trend ResourceTrend) (Analysis, error) {
+func (oa *OpenAIAnalyzer) Analyze(ctx context.Context, event kafka.PodEvent, trend ResourceTrend, node *k8.Node) (Analysis, error) {
 
-	prompt := buildPrompt(event, trend)
+	prompt := buildPrompt(event, trend, node)
 
 	resp, err := oa.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model: oa.model,
@@ -59,7 +59,12 @@ func (oa *OpenAIAnalyzer) Analyze(ctx context.Context, event kafka.PodEvent, tre
 
 }
 
-func buildPrompt(event kafka.PodEvent, trend ResourceTrend) string {
+func buildPrompt(event kafka.PodEvent, trend ResourceTrend, node *k8.Node) string {
+	nodeInfo := "unknown"
+	if node != nil {
+		nodeInfo = fmt.Sprintf("status: %s, CPU capacity: %s, memory capacity: %s, kubelet: %s",
+			node.Status, node.CPUCapacity, node.MemoryCapacity, node.KubeletVersion)
+	}
 	return fmt.Sprintf(`You are a Kubernetes SRE expert. Analyze this pod failure step by step.
 
 Pod: %s
@@ -81,6 +86,8 @@ Recent Deployments:
 %s
 
 Resource trend (last %d readings): avg memory %dMi, avg cpu %dm, direction: %s
+
+Node Info: %s
 
 Respond ONLY in this JSON format, no other text:
 {
@@ -116,6 +123,7 @@ Respond ONLY in this JSON format, no other text:
 		trend.AvgMemoryMi,
 		trend.AvgCPUMilli,
 		trend.Direction,
+		nodeInfo,
 	)
 }
 

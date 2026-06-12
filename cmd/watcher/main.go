@@ -45,6 +45,9 @@ func main() {
 		log.Fatal(err)
 	}
 	for _, pod := range pods {
+		if !k8.IsUnhealthy(pod) {
+			continue
+		}
 		if err := producer.Publish(ctx, kafka.PodEvent{Pod: pod, Timestamp: time.Now()}); err != nil {
 			log.Println("publish error:", err)
 		}

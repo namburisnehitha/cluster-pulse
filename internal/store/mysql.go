@@ -66,16 +66,16 @@ func (m *MySQL) SaveAnalysis(ctx context.Context, a ai.Analysis) error {
 		return err
 	}
 
-	var failureTime sql.NullTime
+	var failure_time sql.NullTime
 
 	if !a.FailureTime.IsZero() {
-		failureTime = sql.NullTime{Time: a.FailureTime, Valid: true}
+		failure_time = sql.NullTime{Time: a.FailureTime, Valid: true}
 	}
 
 	_, err = m.db.ExecContext(ctx, `
 		INSERT INTO analyses (pod_name, namespace, severity, confidence, is_recurring, failureTime, analyzed_at, details)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, a.PodName, a.Namespace, a.Severity, a.Confidence, a.IsRecurring, failureTime, a.AnalyzedAt, details)
+	`, a.PodName, a.Namespace, a.Severity, a.Confidence, a.IsRecurring, failure_time, a.AnalyzedAt, details)
 
 	return err
 }
@@ -224,4 +224,9 @@ func (m *MySQL) ListAnalyses(ctx context.Context, cursor string, limit int) ([]a
 
 func (m *MySQL) Close() error {
 	return m.db.Close()
+}
+
+func (m *MySQL) CallPrune(ctx context.Context, retentionDays int) error {
+	_, err := m.db.ExecContext(ctx, "CALL prune_old_data(?)", retentionDays)
+	return err
 }

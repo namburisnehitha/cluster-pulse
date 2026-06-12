@@ -14,10 +14,19 @@ type SlackNotifier struct {
 	WebHookURL string
 }
 
-func NewNotifier(url string) *SlackNotifier {
+type noopNotifier struct{}
+
+func NewNotifier(url string) Notifier {
+	if url == "" {
+		return &noopNotifier{}
+	}
 	return &SlackNotifier{
 		WebHookURL: url,
 	}
+}
+
+func (n *noopNotifier) Notify(_ context.Context, _ ai.Analysis) error {
+	return nil
 }
 
 func (n *SlackNotifier) Notify(ctx context.Context, analysis ai.Analysis) error {

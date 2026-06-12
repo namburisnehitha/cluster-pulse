@@ -12,5 +12,6 @@ type Store interface {
 	GetAnalysis(ctx context.Context, podName, namespace string) (*ai.Analysis, error)
 	GetPodHistory(ctx context.Context, podName, namespace string, limit int) ([]ResourceSnapshot, error)
 	ListAnalyses(ctx context.Context, cursor string, limit int) ([]ai.Analysis, string, error)
+	CallPrune(ctx context.Context, retentionDays int) error
 	Close() error
 }

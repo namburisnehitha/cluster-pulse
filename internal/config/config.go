@@ -35,12 +35,20 @@ func Load(path string) (*Config, error) {
 
 	var cfg Config
 
+	if err := viper.Unmarshal(&cfg); err != nil {
+		return nil, err
+	}
+
 	if brokers := os.Getenv("KAFKA_BROKERS"); brokers != "" {
 		cfg.KafkaBrokers = strings.Split(brokers, ",")
 	}
 
-	if err := viper.Unmarshal(&cfg); err != nil {
-		return nil, err
+	if dsn := os.Getenv("MYSQLDSN"); dsn != "" {
+		cfg.MySQLDSN = dsn
+	}
+
+	if addr := os.Getenv("REDISADDR"); addr != "" {
+		cfg.RedisAddr = addr
 	}
 
 	return &cfg, nil

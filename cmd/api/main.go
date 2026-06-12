@@ -8,12 +8,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/namburisnehitha/cluster-pulse/internal/cache"
 	"github.com/namburisnehitha/cluster-pulse/internal/config"
 	"github.com/namburisnehitha/cluster-pulse/internal/k8"
 	"github.com/namburisnehitha/cluster-pulse/internal/store"
 )
 
 func main() {
+
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
 		panic(err)
@@ -24,13 +26,20 @@ func main() {
 		panic(err)
 	}
 
-	mysqlStore, err := store.New(cfg.MySQLDSN)
+	var s store.Store
+	s, err = store.New(cfg.MySQLDSN)
 	if err != nil {
 		panic(err)
 	}
-	defer mysqlStore.Close()
+	defer s.Close()
 
-	router := setupRouter(cfg, k8sClient, mysqlStore)
+	redisCache, err := cache.NewRedis(context.Background(), cfg.RedisAddr, cfg.RedisPassword)
+	if err != nil {
+		panic(err)
+	}
+	defer redisCache.Close()
+
+	router := setupRouter(cfg, k8sClient, s, redisCache)
 
 	srv := &http.Server{
 		Addr:    ":8080",

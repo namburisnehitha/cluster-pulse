@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"os/signal"
@@ -54,15 +55,19 @@ func main() {
 	}
 	defer mysqlStore.Close()
 
+	if err := mysqlStore.CallPrune(ctx, cfg.ResourceSnapshotRetentionDays); err != nil {
+		log.Println("prune error:", err)
+
+	}
 	k8sClient, err := k8.NewClient()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	primaryAnalyzer := ai.NewOpenAIAnalyzer(cfg.GroqAPIKey, groqBaseURL, cfg.GroqModel)
-	fallbackAnalyzer := ai.NewOpenAIAnalyzer(cfg.OpenAIAPIKey, "", cfg.OpenAIModel)
+	var primaryAnalyzer = ai.NewOpenAIAnalyzer(cfg.GroqAPIKey, groqBaseURL, cfg.GroqModel)
+	var fallbackAnalyzer = ai.NewOpenAIAnalyzer(cfg.OpenAIAPIKey, "", cfg.OpenAIModel)
 
-	slackNotifier := notifier.NewNotifier(cfg.SlackWebhookURL)
+	var slackNotifier notifier.Notifier = notifier.NewNotifier(cfg.SlackWebhookURL)
 
 	sem := make(chan struct{}, cfg.WorkerConcurrencyLimit)
 	var wg sync.WaitGroup
@@ -103,10 +108,17 @@ func main() {
 			}
 			trend := store.ComputeTrend(history)
 
-			analysis, err := primaryAnalyzer.Analyze(ctx, event, trend)
+			var node *k8.Node
+			if event.Pod.NodeName != "" {
+				node, err = k8sClient.GetNode(ctx, event.Pod.NodeName)
+				if err != nil {
+					log.Println("get node error:", err)
+				}
+			}
+			analysis, err := primaryAnalyzer.Analyze(ctx, event, trend, node)
 			if err != nil {
 				log.Println("primary analyzer error:", err)
-				analysis, err = fallbackAnalyzer.Analyze(ctx, event, trend)
+				analysis, err = fallbackAnalyzer.Analyze(ctx, event, trend, node)
 				if err != nil {
 					log.Println("fallback analyzer error:", err)
 					return
@@ -137,8 +149,13 @@ func main() {
 				}
 			}
 
-			if err := redisCache.Set(ctx, key, "1", 5*time.Minute); err != nil {
-				log.Println("cache set error:", err)
+			analysisJSON, err := json.Marshal(analysis)
+			if err != nil {
+				log.Println("marshal error:", err)
+			} else {
+				if err := redisCache.Set(ctx, key, analysisJSON, 5*time.Minute); err != nil {
+					log.Println("cache set error:", err)
+				}
 			}
 
 			if err := slackNotifier.Notify(ctx, analysis); err != nil {

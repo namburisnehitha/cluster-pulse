@@ -3,6 +3,7 @@ package k8
 import (
 	"context"
 	"io"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -333,4 +334,92 @@ func (c *Client) GetPodMetrics(ctx context.Context, namespace, podName string) (
 	mem := metrics.Containers[0].Usage.Memory()
 
 	return cpu.String(), mem.String(), nil
+}
+
+func (c *Client) ListAllNodes(ctx context.Context) ([]Node, error) {
+	nodeList, err := c.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	var nodes []Node
+	for _, n := range nodeList.Items {
+		status := "Ready"
+		for _, condition := range n.Status.Conditions {
+			if condition.Type == corev1.NodeReady && condition.Status != corev1.ConditionTrue {
+				status = "NotReady"
+			}
+		}
+
+		var roles []string
+		for label := range n.Labels {
+			if strings.HasPrefix(label, "node-role.kubernetes.io/") {
+				roles = append(roles, strings.TrimPrefix(label, "node-role.kubernetes.io/"))
+			}
+		}
+
+		nodes = append(nodes, Node{
+			Name:           n.Name,
+			Status:         status,
+			Roles:          roles,
+			Age:            n.CreationTimestamp.Time,
+			KubeletVersion: n.Status.NodeInfo.KubeletVersion,
+			CPUCapacity:    n.Status.Capacity.Cpu().String(),
+			MemoryCapacity: n.Status.Capacity.Memory().String(),
+		})
+	}
+	return nodes, nil
+}
+
+func (c *Client) ListAllEvents(ctx context.Context, namespace string) ([]Event, error) {
+	if namespace == "" {
+		namespace = metav1.NamespaceAll
+	}
+	eventList, err := c.clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	var events []Event
+	for _, e := range eventList.Items {
+		events = append(events, Event{
+			Reason:   e.Reason,
+			Message:  e.Message,
+			Type:     e.Type,
+			Count:    int(e.Count),
+			LastTime: e.LastTimestamp.Time,
+		})
+	}
+	return events, nil
+}
+
+func (c *Client) GetNode(ctx context.Context, nodeName string) (*Node, error) {
+	n, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	status := "Ready"
+	for _, condition := range n.Status.Conditions {
+		if condition.Type == corev1.NodeReady && condition.Status != corev1.ConditionTrue {
+			status = "NotReady"
+		}
+	}
+
+	var roles []string
+	for label := range n.Labels {
+		if strings.HasPrefix(label, "node-role.kubernetes.io/") {
+			roles = append(roles, strings.TrimPrefix(label, "node-role.kubernetes.io/"))
+		}
+	}
+
+	return &Node{
+		Name:           n.Name,
+		Status:         status,
+		Roles:          roles,
+		Age:            n.CreationTimestamp.Time,
+		KubeletVersion: n.Status.NodeInfo.KubeletVersion,
+		CPUCapacity:    n.Status.Capacity.Cpu().String(),
+		MemoryCapacity: n.Status.Capacity.Memory().String(),
+	}, nil
 }
