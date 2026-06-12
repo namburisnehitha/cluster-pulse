@@ -4,7 +4,7 @@ func IsUnhealthy(p Pod) bool {
 	if p.Phase == "Failed" {
 		return true
 	}
-	if p.RestartCount > 5 {
+	if p.RestartCount >= 5 {
 		return true
 	}
 	if p.ExitCode != 0 {
