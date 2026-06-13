@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -15,7 +16,7 @@ import (
 )
 
 type Client struct {
-	clientset     *kubernetes.Clientset
+	clientset     kubernetes.Interface
 	metricsClient *metricsv.Clientset
 }
 
@@ -48,6 +49,9 @@ func (c *Client) WatchPods(ctx context.Context) (<-chan PodResult, error) {
 	go func() {
 		defer close(podCh)
 
+		var lastResourceVersion string
+		backoff := time.Second
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -55,12 +59,28 @@ func (c *Client) WatchPods(ctx context.Context) (<-chan PodResult, error) {
 			default:
 			}
 
-			watcher, err := c.clientset.CoreV1().Pods("").Watch(ctx, metav1.ListOptions{})
-			if err != nil {
-				podCh <- PodResult{Err: err}
-				return
+			opts := metav1.ListOptions{}
+			if lastResourceVersion != "" {
+				opts.ResourceVersion = lastResourceVersion
 			}
 
+			watcher, err := c.clientset.CoreV1().Pods("").Watch(ctx, opts)
+			if err != nil {
+				podCh <- PodResult{Err: err}
+
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+				if backoff < 30*time.Second {
+					backoff *= 2
+				}
+				continue
+			}
+			backoff = time.Second // reset on success
+
+		eventLoop:
 			for event := range watcher.ResultChan() {
 				select {
 				case <-ctx.Done():
@@ -69,34 +89,43 @@ func (c *Client) WatchPods(ctx context.Context) (<-chan PodResult, error) {
 				default:
 				}
 
+				if event.Type == watch.Error {
+					if status, ok := event.Object.(*metav1.Status); ok && status.Reason == metav1.StatusReasonGone {
+						lastResourceVersion = "" // force relist on next reconnect
+					}
+					break eventLoop
+				}
+
 				pod, ok := event.Object.(*corev1.Pod)
 				if !ok {
 					continue
 				}
 
-				if !isUnhealthy(pod) {
+				lastResourceVersion = pod.ResourceVersion
+
+				if !IsUnhealthyPod(pod) {
 					continue
 				}
 
-				Pod := toDomainPod(pod)
+				Pod := ToDomainPod(pod)
 
-				logs, err := c.GetPodLogs(ctx, Pod.Namespace, Pod.Name, Pod.ContainerName)
-				if err != nil {
-					continue
+				if logs, err := c.GetPodLogs(ctx, Pod.Namespace, Pod.Name, Pod.ContainerName); err != nil {
+					Pod.LogsError = err.Error()
+				} else {
+					Pod.Logs = logs
 				}
-				Pod.Logs = logs
 
-				events, err := c.GetRecentEvents(ctx, Pod.Namespace, Pod.Name)
-				if err != nil {
-					continue
+				if events, err := c.GetRecentEvents(ctx, Pod.Namespace, Pod.Name); err != nil {
+					Pod.EventsError = err.Error()
+				} else {
+					Pod.Events = events
 				}
-				Pod.Events = events
 
-				deploy, err := c.GetRecentDeployments(ctx, Pod.Namespace)
-				if err != nil {
-					continue
+				if deploy, err := c.GetRecentDeployments(ctx, Pod.Namespace); err != nil {
+					Pod.DeploymentsError = err.Error()
+				} else {
+					Pod.Deployments = deploy
 				}
-				Pod.Deployments = deploy
 
 				Pod.WatchReceivedAt = time.Now()
 				podCh <- PodResult{Pod: Pod}
@@ -110,20 +139,20 @@ func (c *Client) WatchPods(ctx context.Context) (<-chan PodResult, error) {
 	return podCh, nil
 }
 
-func isUnhealthy(pod *corev1.Pod) bool {
+func IsUnhealthyPod(pod *corev1.Pod) bool {
 
 	if pod.Status.Phase == corev1.PodFailed {
 		return true
 	}
 
-	if hasUnhealthyContainer(pod) {
+	if HasUnhealthyContainer(pod) {
 		return true
 	}
 
 	return false
 }
 
-func hasUnhealthyContainer(pod *corev1.Pod) bool {
+func HasUnhealthyContainer(pod *corev1.Pod) bool {
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.State.Waiting != nil {
 			reason := cs.State.Waiting.Reason
@@ -253,7 +282,7 @@ func (c *Client) ListAllPods(ctx context.Context) ([]Pod, error) {
 
 	for _, l := range ClientList.Items {
 
-		pod := toDomainPod(&l)
+		pod := ToDomainPod(&l)
 
 		returnList = append(returnList, pod)
 	}
@@ -262,7 +291,7 @@ func (c *Client) ListAllPods(ctx context.Context) ([]Pod, error) {
 
 }
 
-func toDomainPod(pod *corev1.Pod) Pod {
+func ToDomainPod(pod *corev1.Pod) Pod {
 
 	p := Pod{
 		Name:      pod.Name,
@@ -422,4 +451,8 @@ func (c *Client) GetNode(ctx context.Context, nodeName string) (*Node, error) {
 		CPUCapacity:    n.Status.Capacity.Cpu().String(),
 		MemoryCapacity: n.Status.Capacity.Memory().String(),
 	}, nil
+}
+
+func NewClientWithClientset(clientset kubernetes.Interface) *Client {
+	return &Client{clientset: clientset}
 }
