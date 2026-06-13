@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strconv"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-migrate/migrate/v4"
@@ -41,6 +43,10 @@ func New(dsn string) (*MySQL, error) {
 	return &MySQL{db: db}, nil
 }
 
+func NewWithDB(db *sql.DB) *MySQL {
+	return &MySQL{db: db}
+}
+
 func (m *MySQL) SaveAnalysis(ctx context.Context, a ai.Analysis) error {
 	details, err := json.Marshal(struct {
 		RootCause            string   `json:"root_cause"`
@@ -72,11 +78,22 @@ func (m *MySQL) SaveAnalysis(ctx context.Context, a ai.Analysis) error {
 		failure_time = sql.NullTime{Time: a.FailureTime, Valid: true}
 	}
 
-	_, err = m.db.ExecContext(ctx, `
-		INSERT INTO analyses (pod_name, namespace, severity, confidence, is_recurring, failureTime, analyzed_at, details)
+	backoff := 100 * time.Millisecond
+	for attempt := 0; attempt < 3; attempt++ {
+		_, err = m.db.ExecContext(ctx, `
+		INSERT INTO analyses (pod_name, namespace, severity, confidence, is_recurring, failure_time, analyzed_at, details)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, a.PodName, a.Namespace, a.Severity, a.Confidence, a.IsRecurring, failure_time, a.AnalyzedAt, details)
-
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
 	return err
 }
 
@@ -136,7 +153,7 @@ func (m *MySQL) GetPodHistory(ctx context.Context, podName, namespace string, li
 		SELECT id, pod_name, namespace, cpu_usage, memory_usage, recorded_at
 		FROM resource_snapshots
 		WHERE pod_name = ? AND namespace = ?
-		ORDER BY recorded_at ASC LIMIT ?
+		ORDER BY recorded_at DESC LIMIT ?
 	`, podName, namespace, limit)
 	if err != nil {
 		return nil, err
@@ -150,6 +167,10 @@ func (m *MySQL) GetPodHistory(ctx context.Context, podName, namespace string, li
 			return nil, err
 		}
 		snaps = append(snaps, s)
+	}
+
+	for i, j := 0, len(snaps)-1; i < j; i, j = i+1, j-1 {
+		snaps[i], snaps[j] = snaps[j], snaps[i]
 	}
 
 	return snaps, rows.Err()
@@ -168,22 +189,24 @@ func (m *MySQL) ListAnalyses(ctx context.Context, cursor string, limit int) ([]a
 			LIMIT ?
 		`, limit)
 	} else {
-		decoded, err := base64.StdEncoding.DecodeString(cursor)
-		if err != nil {
-			return nil, "", err
+		var lastID int64
+		decoded, decodeErr := base64.StdEncoding.DecodeString(cursor)
+		if decodeErr != nil {
+			return nil, "", decodeErr
 		}
-		lastID, err := strconv.ParseInt(string(decoded), 10, 64)
-		if err != nil {
-			return nil, "", err
+		lastID, decodeErr = strconv.ParseInt(string(decoded), 10, 64)
+		if decodeErr != nil {
+			return nil, "", decodeErr
 		}
 		rows, err = m.db.QueryContext(ctx, `
-			SELECT id, pod_name, namespace, severity, confidence, is_recurring, failure_time, analyzed_at, details
-			FROM analyses
-			WHERE id < ?
-			ORDER BY id DESC
-			LIMIT ?
-		`, lastID, limit)
+        SELECT id, pod_name, namespace, severity, confidence, is_recurring, failure_time, analyzed_at, details
+        FROM analyses
+        WHERE id < ?
+        ORDER BY id DESC
+        LIMIT ?
+    `, lastID, limit)
 	}
+
 	if err != nil {
 		return nil, "", err
 	}
@@ -227,6 +250,9 @@ func (m *MySQL) Close() error {
 }
 
 func (m *MySQL) CallPrune(ctx context.Context, retentionDays int) error {
+	if retentionDays < 0 {
+		return fmt.Errorf("retention days must be non-negative, got %d", retentionDays)
+	}
 	_, err := m.db.ExecContext(ctx, "CALL prune_old_data(?)", retentionDays)
 	return err
 }
