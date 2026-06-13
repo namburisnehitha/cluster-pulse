@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/namburisnehitha/cluster-pulse/internal/k8"
@@ -28,7 +29,10 @@ func NewOpenAIAnalyzer(apiKey, baseURL, model string) *OpenAIAnalyzer {
 
 func (oa *OpenAIAnalyzer) Analyze(ctx context.Context, event kafka.PodEvent, trend ResourceTrend, node *k8.Node) (Analysis, error) {
 
-	prompt := buildPrompt(event, trend, node)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	prompt := BuildPrompt(event, trend, node)
 
 	resp, err := oa.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model: oa.model,
@@ -44,13 +48,25 @@ func (oa *OpenAIAnalyzer) Analyze(ctx context.Context, event kafka.PodEvent, tre
 		return Analysis{}, err
 	}
 
+	if len(resp.Choices) == 0 {
+		return Analysis{}, fmt.Errorf("no choices returned from model")
+	}
+
 	ans := resp.Choices[0].Message.Content
 
-	var analysis Analysis
-	err = json.Unmarshal([]byte(ans), &analysis)
+	ans = strings.TrimSpace(ans)
+	ans = strings.TrimPrefix(ans, "```json")
+	ans = strings.TrimPrefix(ans, "```")
+	ans = strings.TrimSuffix(ans, "```")
+	ans = strings.TrimSpace(ans)
 
-	if err != nil {
-		return Analysis{}, err
+	var analysis Analysis
+	if err := json.Unmarshal([]byte(ans), &analysis); err != nil {
+		return Analysis{}, fmt.Errorf("failed to parse model response: %w (raw: %s)", err, ans)
+	}
+
+	if analysis.RootCause == "" {
+		return Analysis{}, fmt.Errorf("model returned empty root_cause")
 	}
 
 	analysis.AnalyzedAt = time.Now()
@@ -59,7 +75,14 @@ func (oa *OpenAIAnalyzer) Analyze(ctx context.Context, event kafka.PodEvent, tre
 
 }
 
-func buildPrompt(event kafka.PodEvent, trend ResourceTrend, node *k8.Node) string {
+func BuildPrompt(event kafka.PodEvent, trend ResourceTrend, node *k8.Node) string {
+
+	logs := event.Pod.Logs
+	const maxLogChars = 4000
+	if len(logs) > maxLogChars {
+		logs = logs[len(logs)-maxLogChars:]
+	}
+
 	nodeInfo := "unknown"
 	if node != nil {
 		nodeInfo = fmt.Sprintf("status: %s, CPU capacity: %s, memory capacity: %s, kubelet: %s",
@@ -101,7 +124,7 @@ Respond ONLY in this JSON format, no other text:
   "suggested_memory_limit": "",
   "suggested_cpu_limit": "",
   "exit_code_explanation": "",
-  "relevant_log_lines": "",
+  "relevant_log_lines": [],
   "triggering_deployment": "",
   "resource_trend": "",
   "is_recurring": false,
@@ -116,7 +139,7 @@ Respond ONLY in this JSON format, no other text:
 		event.Pod.NodeName,
 		event.Pod.MemoryLimit,
 		event.Pod.CPULimit,
-		event.Pod.Logs,
+		logs,
 		formatEvents(event.Pod.Events),
 		formatDeployments(event.Pod.Deployments),
 		trend.SampleCount,
@@ -141,9 +164,9 @@ func formatEvents(events []k8.Event) string {
 	return result
 }
 
-func formatDeployments(depolyments []k8.Deployment) string {
+func formatDeployments(deployments []k8.Deployment) string {
 	result := ""
-	for _, d := range depolyments {
+	for _, d := range deployments {
 		result += fmt.Sprintf("%s, %s, last updated: %s, desired: %d, available: %d\n",
 			d.Name,
 			d.Image,
