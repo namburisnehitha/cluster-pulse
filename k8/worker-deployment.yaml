@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-pulse-worker
+  namespace: cluster-pulse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-pulse-worker
+  template:
+    metadata:
+      labels:
+        app: cluster-pulse-worker
+    spec:
+      serviceAccountName: cluster-pulse
+      containers:
+        - name: worker
+          image: cluster-pulse-worker:latest
+          imagePullPolicy: Never
+          env:
+            - name: MYSQLDSN
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-pulse-secret
+                  key: mysql_dsn
+            - name: REDISADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-pulse-config
+                  key: redis_addr
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-pulse-secret
+                  key: redis_password
+            - name: KAFKA_BROKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-pulse-config
+                  key: kafka_brokers
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-pulse-secret
+                  key: groq_api_key
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-pulse-secret
+                  key: openai_api_key
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-pulse-secret
+                  key: slack_webhook_url

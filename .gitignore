@@ -4,6 +4,10 @@
 # Local config
 config.yaml
 
+#k8
+secret.yaml
+*.secret.yaml
+
 # Build artifacts
 build.log
 *.out

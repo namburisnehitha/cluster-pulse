@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-pulse-watcher
+  namespace: cluster-pulse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-pulse-watcher
+  template:
+    metadata:
+      labels:
+        app: cluster-pulse-watcher
+    spec:
+      serviceAccountName: cluster-pulse
+      containers:
+        - name: watcher
+          image: cluster-pulse-watcher:latest
+          imagePullPolicy: Never
+          env:
+            - name: KAFKA_BROKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-pulse-config
+                  key: kafka_brokers

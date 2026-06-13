@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-pulse-api
+  namespace: cluster-pulse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-pulse-api
+  template:
+    metadata:
+      labels:
+        app: cluster-pulse-api
+    spec:
+      serviceAccountName: cluster-pulse
+      containers:
+        - name: api
+          image: cluster-pulse-api:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: MYSQLDSN
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-pulse-secret
+                  key: mysql_dsn
+            - name: REDISADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-pulse-config
+                  key: redis_addr
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-pulse-secret
+                  key: redis_password
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-pulse-secret
+                  key: jwt_secret
+            - name: ADMIN_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-pulse-config
+                  key: admin_username
+            - name: ADMIN_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: cluster-pulse-secret
+                  key: admin_password_hash
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cluster-pulse-api
+  namespace: cluster-pulse
+spec:
+  selector:
+    app: cluster-pulse-api
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP
