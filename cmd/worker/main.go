@@ -96,6 +96,10 @@ func main() {
 			continue
 		}
 
+		if err := redisCache.Set(ctx, key, []byte("processing"), 5*time.Minute); err != nil {
+			log.Println("cache set error:", err)
+		}
+
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(event kafka.PodEvent, key string) {
