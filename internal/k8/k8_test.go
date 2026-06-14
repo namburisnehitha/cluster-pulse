@@ -3,6 +3,9 @@ package k8_test
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,7 +15,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 )
 
 func newTestClient(t *testing.T, objects ...runtime.Object) *k8.Client {
@@ -20,7 +25,29 @@ func newTestClient(t *testing.T, objects ...runtime.Object) *k8.Client {
 	fakeClient := fake.NewSimpleClientset(objects...)
 	return k8.NewClientWithClientset(fakeClient)
 }
+func newTestClientWithLogs(t *testing.T, logs string, statusCode int) *k8.Client {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/log") {
+			w.WriteHeader(statusCode)
+			if statusCode == http.StatusOK {
+				w.Write([]byte(logs))
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(func() { server.Close() })
 
+	config := &rest.Config{
+		Host: server.URL,
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		t.Fatalf("failed to create clientset: %v", err)
+	}
+	return k8.NewClientWithClientset(clientset)
+}
 func TestToDomainPod(t *testing.T) {
 
 	// Situation 1: all basic fields set correctly — name, namespace, phase, node name
@@ -1767,5 +1794,114 @@ func TestListAllEvents(t *testing.T) {
 	}
 	if !events[0].LastTime.IsZero() {
 		t.Errorf("zero last time: got %v, want zero", events[0].LastTime)
+	}
+}
+
+func TestGetPodLogs(t *testing.T) {
+
+	// Situation 1: happy path — returns correct log content
+	c := newTestClientWithLogs(t, "OOMKilled\nMemory limit exceeded\n", http.StatusOK)
+	logs, err := c.GetPodLogs(context.Background(), "default", "pod-1", "my-container")
+	if err != nil {
+		t.Fatalf("happy path: got %v, want nil", err)
+	}
+	if logs != "OOMKilled\nMemory limit exceeded\n" {
+		t.Errorf("happy path: got %q, want OOMKilled\\nMemory limit exceeded\\n", logs)
+	}
+
+	// Situation 2: empty logs — returns empty string, no error
+	c = newTestClientWithLogs(t, "", http.StatusOK)
+	logs, err = c.GetPodLogs(context.Background(), "default", "pod-1", "my-container")
+	if err != nil {
+		t.Fatalf("empty logs: got %v, want nil", err)
+	}
+	if logs != "" {
+		t.Errorf("empty logs: got %q, want empty", logs)
+	}
+
+	// Situation 3: multiline logs — all lines returned correctly, no truncation
+	multiline := "line1\nline2\nline3\nline4\nline5\n"
+	c = newTestClientWithLogs(t, multiline, http.StatusOK)
+	logs, err = c.GetPodLogs(context.Background(), "default", "pod-1", "my-container")
+	if err != nil {
+		t.Fatalf("multiline: got %v, want nil", err)
+	}
+	if logs != multiline {
+		t.Errorf("multiline: got %q, want %q", logs, multiline)
+	}
+
+	// Situation 4: logs with special characters — newlines, unicode, no corruption
+	special := "Error: connection refused\nStacktrace:\n\tat main.go:42\nUnicode: 日本語\n"
+	c = newTestClientWithLogs(t, special, http.StatusOK)
+	logs, err = c.GetPodLogs(context.Background(), "default", "pod-1", "my-container")
+	if err != nil {
+		t.Fatalf("special chars: got %v, want nil", err)
+	}
+	if logs != special {
+		t.Errorf("special chars: got %q, want %q", logs, special)
+	}
+
+	// Situation 5: server returns 500 — returns error, empty string
+	c = newTestClientWithLogs(t, "", http.StatusInternalServerError)
+	logs, err = c.GetPodLogs(context.Background(), "default", "pod-1", "my-container")
+	if err == nil {
+		t.Errorf("500 error: got nil, want error")
+	}
+	if logs != "" {
+		t.Errorf("500 error: got %q, want empty", logs)
+	}
+
+	// Situation 6: server returns 404 — pod not found, returns error
+	c = newTestClientWithLogs(t, "", http.StatusNotFound)
+	logs, err = c.GetPodLogs(context.Background(), "default", "pod-1", "my-container")
+	if err == nil {
+		t.Errorf("404 not found: got nil, want error")
+	}
+	if logs != "" {
+		t.Errorf("404 not found: got %q, want empty", logs)
+	}
+
+	// Situation 7: context cancelled — returns error
+	c = newTestClientWithLogs(t, "some logs", http.StatusOK)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	logs, err = c.GetPodLogs(ctx, "default", "pod-1", "my-container")
+	if err == nil {
+		t.Errorf("cancelled context: got nil, want error")
+	}
+	if logs != "" {
+		t.Errorf("cancelled context: got %q, want empty", logs)
+	}
+
+	// Situation 8: large log output — no corruption, full content returned
+	var sb strings.Builder
+	for i := 0; i < 1000; i++ {
+		sb.WriteString(fmt.Sprintf("log line %d: something happened here\n", i))
+	}
+	largeLogs := sb.String()
+	c = newTestClientWithLogs(t, largeLogs, http.StatusOK)
+	logs, err = c.GetPodLogs(context.Background(), "default", "pod-1", "my-container")
+	if err != nil {
+		t.Fatalf("large logs: got %v, want nil", err)
+	}
+	if logs != largeLogs {
+		t.Errorf("large logs: content corrupted, lengths differ: got %d, want %d", len(logs), len(largeLogs))
+	}
+
+	// Situation 9: empty container name — no panic, request goes through
+	c = newTestClientWithLogs(t, "some logs", http.StatusOK)
+	logs, err = c.GetPodLogs(context.Background(), "default", "pod-1", "")
+	if err != nil {
+		t.Fatalf("empty container: got %v, want nil", err)
+	}
+
+	// Situation 10: empty pod name — no panic, server handles it
+	c = newTestClientWithLogs(t, "", http.StatusNotFound)
+	logs, err = c.GetPodLogs(context.Background(), "default", "", "my-container")
+	if err == nil {
+		t.Errorf("empty pod name: got nil, want error")
+	}
+	if logs != "" {
+		t.Errorf("empty pod name: got %q, want empty", logs)
 	}
 }

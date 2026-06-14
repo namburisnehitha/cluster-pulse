@@ -6,6 +6,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
@@ -18,6 +23,7 @@ import (
 type Client struct {
 	clientset     kubernetes.Interface
 	metricsClient *metricsv.Clientset
+	tracer        trace.Tracer
 }
 
 func NewClient() (*Client, error) {
@@ -40,7 +46,7 @@ func NewClient() (*Client, error) {
 		return nil, err
 	}
 
-	return &Client{clientset: clientset, metricsClient: metricsClient}, nil
+	return &Client{clientset: clientset, metricsClient: metricsClient, tracer: otel.Tracer("Watch-Pod")}, nil
 }
 
 func (c *Client) WatchPods(ctx context.Context) (<-chan PodResult, error) {
@@ -58,6 +64,16 @@ func (c *Client) WatchPods(ctx context.Context) (<-chan PodResult, error) {
 				return
 			default:
 			}
+			endReasonSet := false
+
+			watchCtx, watchSpan := getTracer().Start(ctx, "k8s.watch.connection",
+				trace.WithSpanKind(trace.SpanKindConsumer),
+				trace.WithAttributes(
+					attribute.String(string(semconv.K8SNamespaceNameKey), ""),
+					attribute.String("k8s.resource", "pods"),
+					attribute.String("k8s.watch.resource_version", lastResourceVersion),
+				),
+			)
 
 			opts := metav1.ListOptions{}
 			if lastResourceVersion != "" {
@@ -66,73 +82,217 @@ func (c *Client) WatchPods(ctx context.Context) (<-chan PodResult, error) {
 
 			watcher, err := c.clientset.CoreV1().Pods("").Watch(ctx, opts)
 			if err != nil {
+				watchSpan.RecordError(err)
+				watchSpan.SetStatus(codes.Error, "watch failed to start")
+				watchSpan.SetAttributes(attribute.String("k8s.watch.end_reason", "start_failed"))
+				endReasonSet = true
+				watchSpan.End()
+
 				podCh <- PodResult{Err: err}
 
+				_, reconnectSpan := getTracer().Start(ctx, "k8s.watch.reconnect",
+					trace.WithAttributes(
+						attribute.String("k8s.resource", "pods"),
+						attribute.Int64("k8s.watch.backoff_ms", backoff.Milliseconds()),
+					),
+				)
 				select {
 				case <-ctx.Done():
+					reconnectSpan.End()
 					return
 				case <-time.After(backoff):
 				}
+				reconnectSpan.End()
+
 				if backoff < 30*time.Second {
 					backoff *= 2
 				}
 				continue
 			}
-			backoff = time.Second // reset on success
+			backoff = time.Second
+
+			var (
+				eventCount            int
+				filteredCount         int
+				logsErrorCount        int
+				eventsErrorCount      int
+				deploymentsErrorCount int
+			)
+
+			watchStart := time.Now()
 
 		eventLoop:
-			for event := range watcher.ResultChan() {
+			for {
 				select {
 				case <-ctx.Done():
 					watcher.Stop()
+					watchSpan.SetAttributes(
+						attribute.String("k8s.watch.end_reason", "context_cancelled"),
+						attribute.String("k8s.watch.last_resource_version", lastResourceVersion),
+						attribute.Int("k8s.watch.events_processed", eventCount),
+						attribute.Int("k8s.watch.filtered_count", filteredCount),
+						attribute.Int("k8s.watch.logs_error_count", logsErrorCount),
+						attribute.Int("k8s.watch.events_error_count", eventsErrorCount),
+						attribute.Int("k8s.watch.deployments_error_count", deploymentsErrorCount),
+						attribute.Int64("k8s.watch.connection_duration_ms", time.Since(watchStart).Milliseconds()),
+					)
+					endReasonSet = true
+					watchSpan.End()
 					return
-				default:
-				}
 
-				if event.Type == watch.Error {
-					if status, ok := event.Object.(*metav1.Status); ok && status.Reason == metav1.StatusReasonGone {
-						lastResourceVersion = "" // force relist on next reconnect
+				case event, ok := <-watcher.ResultChan():
+					if !ok {
+						break eventLoop
 					}
-					break eventLoop
+
+					if event.Type == watch.Error {
+						if status, ok := event.Object.(*metav1.Status); ok && status.Reason == metav1.StatusReasonGone {
+							lastResourceVersion = ""
+							watchSpan.SetAttributes(attribute.String("k8s.watch.end_reason", "resource_version_gone"))
+							endReasonSet = true
+						} else {
+							watchSpan.SetAttributes(attribute.String("k8s.watch.end_reason", "watch_error"))
+							endReasonSet = true
+						}
+						break eventLoop
+					}
+
+					pod, ok := event.Object.(*corev1.Pod)
+					if !ok {
+						continue
+					}
+
+					if event.Type == watch.Deleted {
+						continue
+					}
+					lastResourceVersion = pod.ResourceVersion
+
+					if !IsUnhealthyPod(pod) {
+						filteredCount++
+						watchSpan.AddEvent("pod_filtered_healthy",
+							trace.WithAttributes(
+								attribute.String(string(semconv.K8SPodNameKey), pod.Name),
+								attribute.String(string(semconv.K8SNamespaceNameKey), pod.Namespace),
+								attribute.String("k8s.pod.phase", string(pod.Status.Phase)),
+							),
+						)
+						continue
+					}
+
+					receivedAt := time.Now()
+
+					_, eventSpan := getTracer().Start(watchCtx, "k8s.watch.event",
+						trace.WithSpanKind(trace.SpanKindInternal),
+						trace.WithTimestamp(receivedAt),
+						trace.WithAttributes(
+							attribute.String(string(semconv.K8SPodNameKey), pod.Name),
+							attribute.String(string(semconv.K8SNamespaceNameKey), pod.Namespace),
+							attribute.String(string(semconv.K8SNodeNameKey), pod.Spec.NodeName),
+							attribute.String("k8s.event.type", string(event.Type)),
+							attribute.String("k8s.pod.phase", string(pod.Status.Phase)),
+						),
+					)
+
+					Pod := ToDomainPod(pod)
+					Pod.WatchReceivedAt = receivedAt
+
+					enrichmentStart := time.Now()
+
+					_, logsSpan := getTracer().Start(watchCtx, "k8s.watch.event.fetch_logs",
+						trace.WithSpanKind(trace.SpanKindInternal),
+						trace.WithAttributes(
+							attribute.String(string(semconv.K8SPodNameKey), Pod.Name),
+							attribute.String(string(semconv.K8SNamespaceNameKey), Pod.Namespace),
+						),
+					)
+					if logs, err := c.GetPodLogs(watchCtx, Pod.Namespace, Pod.Name, Pod.ContainerName); err != nil {
+						Pod.LogsError = err.Error()
+						logsSpan.RecordError(err)
+						logsSpan.SetStatus(codes.Error, "logs fetch failed")
+						logsErrorCount++
+					} else {
+						Pod.Logs = logs
+						logsSpan.SetStatus(codes.Ok, "")
+					}
+					logsSpan.End()
+
+					_, eventsSpan := getTracer().Start(watchCtx, "k8s.watch.event.fetch_events",
+						trace.WithSpanKind(trace.SpanKindInternal),
+						trace.WithAttributes(
+							attribute.String(string(semconv.K8SPodNameKey), Pod.Name),
+							attribute.String(string(semconv.K8SNamespaceNameKey), Pod.Namespace),
+						),
+					)
+					if events, err := c.GetRecentEvents(watchCtx, Pod.Namespace, Pod.Name); err != nil {
+						Pod.EventsError = err.Error()
+						eventsSpan.RecordError(err)
+						eventsSpan.SetStatus(codes.Error, "events fetch failed")
+						eventsErrorCount++
+					} else {
+						Pod.Events = events
+						eventsSpan.SetStatus(codes.Ok, "")
+					}
+					eventsSpan.End()
+
+					_, deploymentsSpan := getTracer().Start(watchCtx, "k8s.watch.event.fetch_deployments",
+						trace.WithSpanKind(trace.SpanKindInternal),
+						trace.WithAttributes(
+							attribute.String(string(semconv.K8SNamespaceNameKey), Pod.Namespace),
+						),
+					)
+					if deploy, err := c.GetRecentDeployments(watchCtx, Pod.Namespace); err != nil {
+						Pod.DeploymentsError = err.Error()
+						deploymentsSpan.RecordError(err)
+						deploymentsSpan.SetStatus(codes.Error, "deployments fetch failed")
+						deploymentsErrorCount++
+					} else {
+						Pod.Deployments = deploy
+						deploymentsSpan.SetStatus(codes.Ok, "")
+					}
+					deploymentsSpan.End()
+
+					eventSpan.SetAttributes(
+						attribute.Int("k8s.pod.exit_code", Pod.ExitCode),
+						attribute.Int("k8s.pod.restart_count", Pod.RestartCount),
+						attribute.Int64("k8s.watch.enrichment_duration_ms", time.Since(enrichmentStart).Milliseconds()),
+					)
+					eventSpan.SetStatus(codes.Ok, "")
+					eventSpan.End()
+
+					eventCount++
+					podCh <- PodResult{Pod: Pod}
 				}
-
-				pod, ok := event.Object.(*corev1.Pod)
-				if !ok {
-					continue
-				}
-
-				lastResourceVersion = pod.ResourceVersion
-
-				if !IsUnhealthyPod(pod) {
-					continue
-				}
-
-				Pod := ToDomainPod(pod)
-
-				if logs, err := c.GetPodLogs(ctx, Pod.Namespace, Pod.Name, Pod.ContainerName); err != nil {
-					Pod.LogsError = err.Error()
-				} else {
-					Pod.Logs = logs
-				}
-
-				if events, err := c.GetRecentEvents(ctx, Pod.Namespace, Pod.Name); err != nil {
-					Pod.EventsError = err.Error()
-				} else {
-					Pod.Events = events
-				}
-
-				if deploy, err := c.GetRecentDeployments(ctx, Pod.Namespace); err != nil {
-					Pod.DeploymentsError = err.Error()
-				} else {
-					Pod.Deployments = deploy
-				}
-
-				Pod.WatchReceivedAt = time.Now()
-				podCh <- PodResult{Pod: Pod}
 			}
 
 			watcher.Stop()
-			// watch dropped — outer loop reconnects
+
+			watchSpan.SetAttributes(
+				attribute.String("k8s.watch.last_resource_version", lastResourceVersion),
+				attribute.Int("k8s.watch.events_processed", eventCount),
+				attribute.Int("k8s.watch.filtered_count", filteredCount),
+				attribute.Int("k8s.watch.logs_error_count", logsErrorCount),
+				attribute.Int("k8s.watch.events_error_count", eventsErrorCount),
+				attribute.Int("k8s.watch.deployments_error_count", deploymentsErrorCount),
+				attribute.Int64("k8s.watch.connection_duration_ms", time.Since(watchStart).Milliseconds()),
+			)
+			if !endReasonSet {
+				watchSpan.SetAttributes(attribute.String("k8s.watch.end_reason", "channel_closed"))
+			}
+			watchSpan.End()
+
+			_, reconnectSpan := getTracer().Start(ctx, "k8s.watch.reconnect",
+				trace.WithAttributes(
+					attribute.String("k8s.resource", "pods"),
+					attribute.Int64("k8s.watch.backoff_ms", backoff.Milliseconds()),
+				),
+			)
+			select {
+			case <-ctx.Done():
+				reconnectSpan.End()
+				return
+			case <-time.After(backoff):
+			}
+			reconnectSpan.End()
 		}
 	}()
 
