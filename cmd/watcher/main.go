@@ -11,6 +11,7 @@ import (
 	"github.com/namburisnehitha/cluster-pulse/internal/config"
 	"github.com/namburisnehitha/cluster-pulse/internal/k8"
 	"github.com/namburisnehitha/cluster-pulse/internal/kafka"
+	"github.com/namburisnehitha/cluster-pulse/internal/telemetry"
 )
 
 func main() {
@@ -38,6 +39,12 @@ func main() {
 	producer := kafka.NewProducer(cfg.KafkaBrokers, cfg.KafkaTopicName)
 
 	defer producer.Close()
+
+	shutdown, err := telemetry.InitTracer("cluster-pulse-watcher")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer shutdown()
 
 	// cold start sync
 	pods, err := k8sClient.ListAllPods(ctx)

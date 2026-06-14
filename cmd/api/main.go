@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,9 +13,16 @@ import (
 	"github.com/namburisnehitha/cluster-pulse/internal/config"
 	"github.com/namburisnehitha/cluster-pulse/internal/k8"
 	"github.com/namburisnehitha/cluster-pulse/internal/store"
+	"github.com/namburisnehitha/cluster-pulse/internal/telemetry"
 )
 
 func main() {
+
+	shutdown, err := telemetry.InitTracer("cluster-pulse-api")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer shutdown()
 
 	cfg, err := config.Load("config.yaml")
 	if err != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/namburisnehitha/cluster-pulse/internal/kafka"
 	"github.com/namburisnehitha/cluster-pulse/internal/notifier"
 	"github.com/namburisnehitha/cluster-pulse/internal/store"
+	"github.com/namburisnehitha/cluster-pulse/internal/telemetry"
 )
 
 const (
@@ -31,6 +32,12 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	shutdown, err := telemetry.InitTracer("cluster-pulse-worker")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer shutdown()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
